@@ -10,8 +10,6 @@ idna==3.10
 matplotlib==3.10.3
 munkres==1.1.4
 narwhals==1.44.0
-opencv-python==4.11.0
-opencv-python-headless==4.11.0.86
 pdfminer.six==20250506
 pdfplumber==0.11.7
 pillow==11.2.1
