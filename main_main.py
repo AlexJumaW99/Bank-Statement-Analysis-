@@ -1,20 +1,20 @@
 import pandas as pd
 import streamlit as st
 # import matplotlib.pyplot as plt
-import seaborn as sns
+# import seaborn as sns
 from datetime import datetime
 import PyPDF2
 import plotly.express as px
 import plotly.graph_objects as go
 
 from typing import List
-from io import BytesIO
+# from io import BytesIO
 
 from google import genai
-from google.genai import types
-import pathlib
-from pathlib import Path
-import os
+# from google.genai import types
+# import pathlib
+# from pathlib import Path
+# import os
 import json
 
 # Set to display all columns
