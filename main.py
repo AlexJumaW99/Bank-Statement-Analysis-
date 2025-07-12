@@ -4,8 +4,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-
-
 # Import functions from your utils.py file
 from utils import (
     extract_text_and_tables_from_uploaded_pdfs,
@@ -13,7 +11,8 @@ from utils import (
     convert_gemini_response_to_dataframe,
     render_metric_card,
     category_guide, # You might want to keep this in utils if it's a global constant for the AI prompt
-    save_pandas_df_as_json
+    save_pandas_df_as_json,
+    get_gemini_recommendations_based_on_transactions
 )
 
 # st.logout()
@@ -37,7 +36,7 @@ def main():
         # print(st.user)
 
     elif user.is_logged_in:
-        st.json(user)
+        # st.json(user)
 
         st.set_page_config(layout="wide", page_title="Credit Card Dashboard")
 
@@ -346,6 +345,13 @@ def main():
                 st.dataframe(top_merchants)
             else:
                 st.info("No data available for the selected filters.")
+
+            # ------------------ AI RECOMMENDATIONS SECTION ------------------
+            st.header("🤖 AI Recommendations")
+            if st.button("Predict"):
+                st.write(get_gemini_recommendations_based_on_transactions(df.to_json(orient='records', date_format='iso')))
+
+
         else:
             st.info("Please upload a bank statement PDF to populate the dashboard. Once uploaded, the extracted data and analysis will appear here.")
 
