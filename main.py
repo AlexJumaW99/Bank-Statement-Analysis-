@@ -75,6 +75,11 @@ def main():
     # Initialize df as an empty DataFrame to prevent NameError if no files are uploaded
     df = pd.DataFrame()
 
+    if st.experimental_user.is_authenticated:
+        st.json(st.experimental_user)
+        print(st.experimental_user) 
+        st.session_state.authenticated = True
+
     if list_of_pdf_files:
         with st.spinner("Extracting text from PDFs and analyzing with AI... This might take a moment."):
             extracted_text_list = extract_text_and_tables_from_uploaded_pdfs(list_of_pdf_files)
