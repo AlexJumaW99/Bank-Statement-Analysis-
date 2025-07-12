@@ -21,7 +21,7 @@ from utils import (
 
 def main():
     user = st.user
-    st.json(st.user)
+    # st.json(st.user)
     # user.logged_in = False
     # print(dict(user))
 
