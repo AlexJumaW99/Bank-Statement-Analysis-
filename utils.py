@@ -220,6 +220,52 @@ def convert_gemini_response_to_dataframe(response_text: str) -> pd.DataFrame:
     except Exception as e:
         st.error(f"An unexpected error occurred during DataFrame conversion: {e}")
         return pd.DataFrame()
+    
+def save_pandas_df_as_json(df: pd.DataFrame, filename: str) -> None:
+    """
+    Saves a pandas DataFrame as a JSON file.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to save.
+        filename (str): The name of the file to save the DataFrame to.
+    """
+    try:
+        df.to_json(filename, orient='records', date_format='iso')
+        st.success(f"DataFrame successfully saved as {filename}")
+    except Exception as e:
+        st.error(f"Error saving DataFrame as JSON: {e}")
+
+def get_gemini_recommendations_based_on_transactions(transactions_json: json) -> str:
+    """
+    Feeds the table to the Gemini API and returns the response.
+    """
+    
+    # Using st.secrets to securely access API key
+    client = genai.Client(api_key="AIzaSyCUUhK6bngglPni-WOPCmTINAetFiisbnk") # Ensure you have this set up in Streamlit secrets
+
+    # Define prompt
+    prompt = f"""
+    Based on the following credit card transactions: {transactions_json}, provide a detailed analysis of the user's spending habits.
+    Explain to them the areas in which they can save money, and suggest specific actions they can take to reduce unnecessary expenses.
+    The analysis should be comprehensive and actionable, focusing on practical steps the user can implement to improve their financial situation.
+    The response should be in a clear, structured format that the user can easily understand and follow. The resonse should be text.   
+    """
+
+    contents = [prompt]
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",  # Using a suitable model
+            contents=contents,
+        )
+
+        if response and response.text:
+            return response.text
+        else:
+            return "No response received from the model or empty response."
+
+    except Exception as e:
+        return f"Error feeding data to Gemini API: {str(e)}"
 
 def render_metric_card(column, title, value, delta=None):
     with column:
