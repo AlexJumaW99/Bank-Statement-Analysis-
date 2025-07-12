@@ -75,7 +75,7 @@ def main():
     # Initialize df as an empty DataFrame to prevent NameError if no files are uploaded
     df = pd.DataFrame()
 
-    if st.experimental_user.is_authenticated:
+    if st.experimental_user:
         st.json(st.experimental_user)
         print(st.experimental_user) 
         st.session_state.authenticated = True
