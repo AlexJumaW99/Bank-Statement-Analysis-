@@ -23,8 +23,9 @@ def main():
     user = st.user
     st.json(st.user)
     # user.logged_in = False
+    # print(dict(user))
 
-    if not user.is_logged_in:
+    if (not user.is_logged_in) or (dict(user) == {}):
         # Streamlit app title and logo
         _, col, _ = st.columns([1, 2, 1])
         col.image("./media/logo3.png", width=500)
