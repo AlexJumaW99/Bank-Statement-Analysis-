@@ -4,6 +4,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
+
+
 # Import functions from your utils.py file
 from utils import (
     extract_text_and_tables_from_uploaded_pdfs,
@@ -19,6 +21,7 @@ from utils import (
 
 def main():
     user = st.user
+    st.json(st.user)
     # user.logged_in = False
 
     if user.is_logged_in==False:
