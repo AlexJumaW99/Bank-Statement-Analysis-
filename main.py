@@ -2,365 +2,267 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
 
-
-
-# Import functions from your utils.py file
+# Import the revised and new functions
+from db_operations import (
+    connect_to_db, create_tables, upsert_google_user,
+    get_user_transactions, bulk_insert_transactions
+)
 from utils import (
-    extract_text_and_tables_from_uploaded_pdfs,
-    get_gemini_response_from_pdf_data,
-    convert_gemini_response_to_dataframe,
-    render_metric_card,
-    category_guide, # You might want to keep this in utils if it's a global constant for the AI prompt
-    save_pandas_df_as_json,
-    get_gemini_recommendations_based_on_transactions
+    extract_text_and_tables_from_uploaded_pdfs, get_gemini_response_from_pdf_data,
+    convert_gemini_response_to_dataframe, render_metric_card, custom_css_markdown,
+    apply_data_types, get_gemini_recommendations_based_on_transactions
 )
 
-# st.logout()
-
 def main():
-    user = st.user
-    # st.json(st.user)
-    # user.logged_in = False
-    # print(dict(user))
+    st.set_page_config(layout="wide", page_title="Credit Card Dashboard")
 
-    if (not user.is_logged_in) or (dict(user) == {}):
-        # Streamlit app title and logo
-        _, col, _ = st.columns([1, 2, 1])
-        col.image("./media/logo3.png", width=500)
-        st.subheader("What are you wasting money on? Unsure? Let's find out!")
-
-        if st.button("Login", use_container_width=True):
-            st.login("google")
-            # st.session_state.authenticated = True
-            # st.success("You are now logged in!")
-
-        # st.json(st.user)
-        # print(st.user)
-
-    elif user.is_logged_in:
-        # st.json(user)
-
-        st.set_page_config(layout="wide", page_title="Credit Card Dashboard")
-
-        st.title("Credit Card Transaction Dashboard")
-        st.subheader(f"Hello, {user.name}! Let's analyze your credit card transactions.")
-        st.image(user.picture)
-
-        # ------------------ Custom CSS for Cards ------------------
-        st.markdown("""
-        <style>
-        .metric-card {
-            background-color: #f0f2f6; /* Light grey background */
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
-            transition: 0.3s;
-            height: 120px; /* Fixed height for uniformity */
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            text-align: center;
-        }
-        .metric-card:hover {
-            box-shadow: 0 8px 16px 0 rgba(0,0,0,0.2);
-        }
-        .metric-title {
-            font-size: 1.1em;
-            color: #333333;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-        .metric-value {
-            font-size: 2.2em;
-            color: #007bff; /* Blue for values */
-            font-weight: bolder;
-        }
-        .metric-delta {
-            font-size: 0.9em;
-            color: #dc3545; /* Red for inverse delta (owing) */
-            font-weight: bold;
-        }
-        .metric-delta.positive {
-            color: #28a745; /* Green for positive deltas (if applicable) */
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        # --- PDF Upload Section in Sidebar ---
-        st.sidebar.header("Upload PDF Statement(s)")
-        uploaded_files = st.sidebar.file_uploader(
-            "Choose PDF file(s)",
-            type="pdf",
-            accept_multiple_files=True,
-            help="Upload your credit card statement(s) in PDF format. You can upload multiple files at once."
-        )
-
-        list_of_pdf_files = []
-        if uploaded_files:
-            list_of_pdf_files = uploaded_files
-
-        # Initialize df as an empty DataFrame to prevent NameError if no files are uploaded
-        df = pd.DataFrame()
-
-        if list_of_pdf_files:
-            with st.spinner("Extracting text from PDFs and analyzing with AI... This might take a moment."):
-                extracted_text_list = extract_text_and_tables_from_uploaded_pdfs(list_of_pdf_files)
-                if extracted_text_list:
-                    response = get_gemini_response_from_pdf_data(extracted_text_list)
-                    df = convert_gemini_response_to_dataframe(response)
-                    save_pandas_df_as_json(df, "transaction_data.json")
-                    # st.success("Data extraction and analysis complete! The dashboard is now populated with your credit card transactions.")
-                else:
-                    st.info("No text extracted from the uploaded PDFs. Please ensure they are valid and contain readable text.")
+    # Initialize DB connection and create tables if they don't exist
+    if 'db_conn' not in st.session_state:
+        st.session_state.db_conn = connect_to_db()
+        if st.session_state.db_conn:
+            create_tables(st.session_state.db_conn)
         else:
-            # st.info("Please upload your PDF statement(s) to get started.")
-            pass
+            st.error("Fatal: Could not connect to the database. App cannot continue.")
+            st.stop()
 
-        # Only display the dashboard if the DataFrame is not empty
-        if not df.empty:
-            # ------------------ TABLE SECTION ------------------
-            st.header("💾 Raw Data")
-            st.markdown("The data was successfully extracted from the uploaded PDF(s) and processed. Below is the raw data in tabular format.")
-            st.dataframe(df, use_container_width=True)
+    user = st.user
 
-            # --- FILTERS (New Section) ---
-            st.sidebar.header("Filter by Time Period")
-
-            # Year dropdown
-            all_years = sorted(df['year'].unique())
-            selected_years = st.sidebar.multiselect(
-                "Select Year(s)",
-                options=all_years,
-                default=all_years,
-                help="Select one or more years to filter the data."
+    if user and user.is_logged_in:
+        # --- Logged-In User Experience ---
+        # Upsert user info and store their ID in the session state
+        if 'user_id' not in st.session_state:
+            st.session_state.user_id = upsert_google_user(
+                st.session_state.db_conn, user.email, user.name, user.picture
             )
+            if st.session_state.user_id is None:
+                st.error("Fatal: Failed to retrieve or create a user profile in the database.")
+                st.stop()
 
-            # Month dropdown
-            all_months = df['month_name'].unique()
-            month_order = [
-                'January', 'February', 'March', 'April', 'May', 'June',
-                'July', 'August', 'September', 'October', 'November', 'December'
-            ]
-            all_months_sorted = [month for month in month_order if month in all_months]
-
-            selected_months = st.sidebar.multiselect(
-                "Select Month(s)",
-                options=all_months_sorted,
-                default=all_months_sorted,
-                help="Select one or more months to filter the data."
-            )
-
-            # Apply filters to the DataFrame
-            filtered_df = df[
-                df['year'].isin(selected_years) &
-                df['month_name'].isin(selected_months)
-            ].copy() # Use .copy() to avoid SettingWithCopyWarning
-
-            # Re-separate expenses and payments based on the filtered DataFrame
-            filtered_expenses = filtered_df[filtered_df['amount_spent'] > 0]
-            filtered_payments = filtered_df[filtered_df['amount_spent'] < 0]
-
-            # ------------------ OVERVIEW SECTION ------------------
-            st.header("📊 Overview")
-            st.markdown("An at-a-glance summary of your overall credit card activity, including total spending, payments made, current balance, average daily spending, and top category of spending.")
-
-            # Calculate metrics using filtered data
-            total_expenses = filtered_expenses['amount_spent'].sum() if not filtered_expenses.empty else 0
-            total_payments = abs(filtered_payments['amount_spent'].sum()) if not filtered_payments.empty else 0
-            total_owing = total_expenses - total_payments
-            avg_daily_spend = filtered_expenses['amount_spent'].mean() if not filtered_expenses.empty else 0
-            
-            if not filtered_expenses.empty:
-                most_frequent_category = filtered_expenses['category'].value_counts().idxmax()
-            else:
-                most_frequent_category = "N/A"
-
-            col1, col2, col3, col4, col5 = st.columns(5)
-
-            # Use the imported render_metric_card function
-            render_metric_card(col1, "Total Spending", f"${total_expenses:,.2f}")
-            render_metric_card(col2, "Total Payments", f"${total_payments:,.2f}")
-            
-            delta_class = "metric-delta"
-            if total_owing > 0:
-                delta_value = f"+${total_owing:,.2f} (Owing)"
-                delta_class += " inverse"
-            elif total_owing < 0:
-                delta_value = f"-${abs(total_owing):,.2f} (Credit)"
-                delta_class += " positive"
-            else:
-                delta_value = "$0.00"
-
-            with col3:
-                card_html_owing = f"""
-                <div class="metric-card">
-                    <div class="metric-title">Current Balance</div>
-                    <div class="metric-value">${total_owing:,.2f}</div>
-                    <div class='{delta_class}'>{delta_value}</div>
-                </div>
-                """
-                st.markdown(card_html_owing, unsafe_allow_html=True)
-
-            render_metric_card(col4, "Avg Daily Spend", f"${avg_daily_spend:,.2f}")
-            render_metric_card(col5, "Most Frequent Category", f"{most_frequent_category}")
-
-            # ------------------ SPENDING PATTERNS SECTION ------------------
-            st.header("💸 Spending Patterns")
-            st.markdown("This section highlights trends in your daily and largest transactions.")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Top 10 Largest Transactions")
-                st.markdown("These are your biggest spending transactions, grouped by activity and category.")
-                if not filtered_expenses.empty:
-                    top10 = filtered_expenses.nlargest(10, 'amount_spent')
-                    top10 = top10.sort_values(by='amount_spent', ascending=True)
-                    top10['unique_description'] = top10['activity_description'] + ' (ID:' + top10.index.astype(str) + ')'
-                    fig = px.bar(top10, x='amount_spent', y='unique_description', color='category', orientation='h',
-                                        title='Top 10 Largest Transactions')
-                    fig.update_layout(yaxis={'categoryorder': 'array', 'categoryarray': top10['unique_description'].tolist()})
-                    st.plotly_chart(fig, use_container_width=True)
+        # Load user's transactions from the database on first run
+        if 'transactions_df' not in st.session_state:
+            with st.spinner("Loading transaction history..."):
+                # get_user_transactions now returns a DataFrame directly
+                df_from_db = get_user_transactions(st.session_state.db_conn, st.session_state.user_id)
+                if not df_from_db.empty:
+                    # It's still crucial to run apply_data_types to ensure
+                    # columns are in the correct format for visualization (e.g., datetime objects)
+                    st.session_state.transactions_df = apply_data_types(df_from_db)
+                    st.success("Transaction history loaded!")
                 else:
-                    st.info("No data available for the selected filters to show top transactions.")
+                    # Initialize with an empty DataFrame if no history exists
+                    st.session_state.transactions_df = pd.DataFrame()
 
-            with col2:
-                st.subheader("Daily Spending vs Payments")
-                st.markdown("Compare your spending and payments over time.")
-                if not filtered_df.empty:
-                    daily_spend = filtered_expenses.groupby('transaction_date')['amount_spent'].sum().reset_index()
-                    daily_payments = filtered_payments.groupby('transaction_date')['amount_spent'].sum().abs().reset_index()
+        df = st.session_state.transactions_df
+
+        # --- Sidebar ---
+        with st.sidebar:
+            st.subheader(f"Hello, {user.name}!")
+            st.image(user.picture, width=100)
+            if st.button("Logout", use_container_width=True):
+                st.logout()
+
+            st.header("Upload PDF Statement(s)")
+            uploaded_files = st.file_uploader("Choose PDF file(s)", type="pdf", accept_multiple_files=True)
+
+            if uploaded_files and st.button("Process Uploaded Files", use_container_width=True):
+                with st.spinner("Processing documents... This may take a moment."):
+                    texts = extract_text_and_tables_from_uploaded_pdfs(uploaded_files)
+                    if texts:
+                        response = get_gemini_response_from_pdf_data(texts)
+                        st.info("Gemini JSON Response:")
+                        st.markdown(response)
+                        # This function now returns a fully preprocessed DataFrame
+                        new_df = convert_gemini_response_to_dataframe(response)
+                        
+                        if not new_df.empty:
+                            # st.info("Extracted transactions via Gemini:")
+                            # st.dataframe(new_df)    
+                            # st.dataframe(new_df.dtypes)
+                            # --- Deduplication Logic ---
+                            def create_unique_id(d):
+                                # Create a consistent, unique ID for each transaction to prevent duplicates
+                                date_str = d['transaction_date'].dt.strftime('%Y-%m-%d').fillna('no_date')
+                                desc_str = d['activity_description'].str.lower().str.strip().fillna('no_desc')
+                                amount_str = d['amount_spent'].round(2).astype(str).fillna('no_amount')
+                                return date_str + '-' + desc_str + '-' + amount_str
+                            
+                            new_df['unique_id'] = create_unique_id(new_df)
+                            
+                            existing_ids = set()
+                            if not df.empty and 'transaction_date' in df.columns:
+                                df['unique_id'] = create_unique_id(df)
+                                existing_ids = set(df['unique_id'])
+                            
+                            df_to_insert = new_df[~new_df['unique_id'].isin(existing_ids)].drop(columns=['unique_id'])
+                            
+                            num_dupes = len(new_df) - len(df_to_insert)
+                            if num_dupes > 0:
+                                st.info(f"Skipped {num_dupes} duplicate transaction(s).")
+                            
+                            if not df_to_insert.empty:
+                                # st.dataframe(df_to_insert)
+                                # st.dataframe(df_to_insert.info())
+                                # st.info("New transactions to be added:")
+                                # st.dataframe(df_to_insert)
+                                # st.dataframe(df_to_insert.dtypes)
+                                # --- Perform Bulk Insert ---
+                                # This is the new, efficient way to add data.
+                                bulk_insert_transactions(st.session_state.db_conn, st.session_state.user_id, df_to_insert)
+                                
+                                # Update the session state and rerun to show new data
+                                st.session_state.transactions_df = pd.concat([df.drop(columns=['unique_id'], errors='ignore'), df_to_insert], ignore_index=True)
+                                st.success(f"Successfully added {len(df_to_insert)} new transactions!")
+                                st.rerun()
+                            elif num_dupes > 0:
+                                st.warning("All transactions from the file(s) already exist in your history.")
+                        else:
+                            st.error("Could not extract any valid transactions from the PDF(s).")
+                    else:
+                        st.error("Failed to extract any text from the provided PDF(s).")
+            
+            if not df.empty:
+                st.header("Filter by Time Period")
+                all_years = sorted(df['year'].dropna().unique().astype(int))
+                selected_years = st.multiselect("Select Year(s)", options=all_years, default=all_years)
+                
+                month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+                available_months = sorted(df['month_name'].dropna().unique(), key=lambda m: month_order.index(m))
+                selected_months = st.multiselect("Select Month(s)", options=available_months, default=available_months)
+        
+        # --- Main Dashboard Display ---
+        st.title("💳 Credit Card Transaction Dashboard")
+        st.markdown(custom_css_markdown, unsafe_allow_html=True)
+        
+        if not df.empty:
+            # Filter data based on sidebar selections
+            filtered_df = df[df['year'].isin(selected_years) & df['month_name'].isin(selected_months)].copy() if selected_years and selected_months else pd.DataFrame()
+
+            if not filtered_df.empty:
+                st.header("💾 Transaction Details")
+                st.dataframe(filtered_df.drop(columns=['unique_id'], errors='ignore'))
+                
+                # --- The rest of your visualization code remains the same ---
+                # It will now work reliably with the clean `filtered_df`
+                expenses = filtered_df[filtered_df['amount_spent'] > 0]
+                payments = filtered_df[filtered_df['amount_spent'] < 0].copy()
+                payments['amount_spent'] = payments['amount_spent'].abs()
+
+                st.header("📊 Overview")
+                col1, col2, col3, col4 = st.columns(4)
+                total_expenses = expenses['amount_spent'].sum()
+                total_payments = payments['amount_spent'].sum()
+                balance = total_expenses - total_payments
+                avg_daily_spend = filtered_df.groupby('transaction_date')['amount_spent'].mean().mean()
+                # st.write(avg_daily_spend)
+                render_metric_card(col1, "Total Spending", f"${total_expenses:,.2f}")
+                render_metric_card(col2, "Total Payments", f"${total_payments:,.2f}")
+                render_metric_card(col3, "Current Balance", f"${balance:,.2f}", f"{'+' if balance >= 0 else ''}${balance:,.2f} {'(Owing)' if balance > 0 else '(Credit)'}", balance > 0)
+                render_metric_card(col4, "Average Daily Spend", f"${avg_daily_spend:,.2f}", f"{'Net Debt Payer' if avg_daily_spend < 0 else 'Net Debt Borrower'}")
+
+
+                st.header("💸 Spending Patterns")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Top 10 Largest Transactions")
+                    top10 = expenses.nlargest(10, 'amount_spent').reset_index()
+                    # Create a unique label for each transaction to prevent grouping
+                    top10['unique_label'] = top10['activity_description'] + " (" + top10['transaction_date'].dt.strftime('%b %d') + ")"
+                    fig_top10 = px.bar(top10, x='amount_spent', y='unique_label', color='category', orientation='h', title='Top 10 Largest Transactions')
+                    fig_top10.update_layout(yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_top10, use_container_width=True)
+
+                with col2:
+                    st.subheader("Daily Spending vs Payments")
+                    # st.markdown("Compare your spending and payments over time.")
+                    daily_spend = expenses.groupby('transaction_date')['amount_spent'].sum().reset_index()
+                    daily_payments = payments.groupby('transaction_date')['amount_spent'].sum().abs().reset_index()
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(x=daily_spend['transaction_date'], y=daily_spend['amount_spent'],
-                                                        mode='lines', name='Daily Spending'))
+                                                     mode='lines', name='Daily Spending'))
                     fig.add_trace(go.Scatter(x=daily_payments['transaction_date'], y=daily_payments['amount_spent'],
-                                                        mode='lines', name='Daily Payments'))
+                                                     mode='lines', name='Daily Payments'))
                     fig.update_layout(title='Daily Spending vs Payments', xaxis_title='Date', yaxis_title='Amount ($)')
                     st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No data available for the selected filters to show daily trends.")
 
-            # ------------------ CATEGORY BREAKDOWN SECTION ------------------
-            st.header("📂 Category Breakdown")
-            st.markdown("A look at your spending broken down by categories and sub-categories.")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Spending by Category")
-                st.markdown("Shows total spend distribution across main categories.")
-                if not filtered_expenses.empty:
-                    category_totals = filtered_expenses.groupby('category')['amount_spent'].sum().reset_index()
-                    fig = px.pie(category_totals, names='category', values='amount_spent',
-                                        title='Spending by Category')
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No data available for the selected filters to show category breakdown.")
+                st.header("📂 Category Breakdown")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Spending by Category")
+                    category_totals = expenses.groupby('category')['amount_spent'].sum()
+                    fig_cat = px.pie(values=category_totals.values, names=category_totals.index, title='Spending by Category')
+                    st.plotly_chart(fig_cat, use_container_width=True)
+                with col2:
+                    st.subheader("Spending by Sub-Category")
+                    sub_cat_totals = expenses.groupby('sub_category')['amount_spent'].sum().nlargest(10)
+                    fig_sub_cat = px.pie(values=sub_cat_totals.values, names=sub_cat_totals.index, title='Top 10 Sub-Categories by Spending')
+                    st.plotly_chart(fig_sub_cat, use_container_width=True)
 
-            with col2:
-                st.subheader("Top 10 Sub-Categories")
-                st.markdown("The top sub-categories you spent the most on.")
-                if not filtered_expenses.empty:
-                    subcat_totals = filtered_expenses.groupby('sub_category')['amount_spent'].sum().nlargest(10).reset_index()
-                    fig = px.pie(subcat_totals, names='sub_category', values='amount_spent',
-                                        title='Top 10 Sub-Category Spend Breakdown')
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No data available for the selected filters to show top sub-categories.")
-
-            # ------------------ TEMPORAL ANALYSIS SECTION ------------------
-            st.header("📅 Temporal Analysis")
-            st.markdown("Understand how your spending evolves across time and days.")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Spending by Month")
-                st.markdown("Bar chart comparing total spending for each month.")
-                if not filtered_expenses.empty:
-                    monthly_totals = filtered_expenses.groupby('month_name')['amount_spent'].sum().reset_index()
-                    monthly_totals['month_name'] = pd.Categorical(
-                        monthly_totals['month_name'], categories=month_order, ordered=True
-                    )
-                    monthly_totals = monthly_totals.sort_values(by='month_name')
-                    fig = px.bar(monthly_totals, x='month_name', y='amount_spent',
-                                        title='Monthly Spending', labels={'amount_spent': 'Amount ($)'})
-                    fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': monthly_totals['month_name'].tolist()})
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No data available for the selected filters to show monthly spending.")
-
-            with col2:
-                st.subheader("Spending by Day of Week")
-                st.markdown("Bar chart showing which days you tend to spend the most.")
-                if not filtered_expenses.empty:
-                    dow_totals = filtered_expenses.groupby('day_of_week')['amount_spent'].sum().reset_index()
+                st.header("📅 Temporal Analysis")
+                # Toggle for Monthly and Daily charts
+                chart_type = st.radio("Select data to view:", ('Expenses', 'Payments'), horizontal=True, key='temporal_toggle')
+                data_to_plot = expenses if chart_type == 'Expenses' else payments
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader(f"{chart_type} by Month")
+                    month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+                    monthly_totals = data_to_plot.groupby('month_name')['amount_spent'].sum().reindex(month_order).dropna()
+                    fig_month = px.bar(monthly_totals, x=monthly_totals.index, y=monthly_totals.values, labels={'y': 'Amount ($)', 'x': 'Month'})
+                    st.plotly_chart(fig_month, use_container_width=True)
+                with col2:
+                    st.subheader(f"{chart_type} by Day of Week")
                     day_order = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-                    dow_totals['day_of_week'] = pd.Categorical(
-                        dow_totals['day_of_week'], categories=day_order, ordered=True
-                    )
-                    dow_totals = dow_totals.sort_values(by='day_of_week')
-                    fig = px.bar(dow_totals, x='day_of_week', y='amount_spent',
-                                        title='Spending by Day of Week', labels={'amount_spent': 'Amount ($)'})
-                    fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': dow_totals['day_of_week'].tolist()})
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("No data available for the selected filters to show daily spending.")
+                    dow_totals = data_to_plot.groupby('day_of_week')['amount_spent'].sum().reindex(day_order).dropna()
+                    fig_dow = px.bar(dow_totals, x=dow_totals.index, y=dow_totals.values, labels={'y': 'Amount ($)', 'x': 'Day of Week'})
+                    st.plotly_chart(fig_dow, use_container_width=True)
 
-            # ------------------ CATEGORY-SPECIFIC ANALYSIS SECTION ------------------
-            st.header("🩺 Health & Subscriptions")
-            st.markdown("Dive into specific types of spending such as healthcare and subscriptions.")
+                st.header("🏪 Frequent Merchants")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Top 10 Merchants by Transaction Count")
+                    top_merchants = expenses['activity_description'].value_counts().head(10).reset_index()
+                    top_merchants.columns = ['Merchant', 'Transaction Count']
+                    st.dataframe(top_merchants)
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Health Expenses Over Time")
-                st.markdown("Track how your health-related spending changes daily.")
-                if not filtered_expenses.empty:
-                    health_expenses = filtered_expenses[filtered_expenses['category'] == 'Healthcare']
-                    if not health_expenses.empty:
-                        health_daily = health_expenses.groupby('transaction_date')['amount_spent'].sum().reset_index()
-                        fig = px.line(health_daily, x='transaction_date', y='amount_spent', title='Daily Health Expenses')
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("No health expenses for the selected filters.")
-                else:
-                    st.info("No data available for the selected filters.")
-
-            with col2:
-                st.subheader("Subscription Costs")
-                st.markdown("A table of all your subscription-based transactions.")
-                if not filtered_expenses.empty:
-                    subscriptions = filtered_expenses[filtered_expenses['is_subscription'] == True] # Use the boolean column
-                    if not subscriptions.empty:
-                        st.dataframe(subscriptions[['activity_description', 'amount_spent']])
+                with col2:
+                    st.subheader("Monthly Subcriptions Costs")
+                    subscriptions = expenses[expenses['is_subscription'] == True] # Use the boolean column
+                    # sorted_subscriptions = subscriptions.sort_values(by='amount_spent', ascending=False)
+                    sorted_subscriptions = subscriptions.groupby('activity_description')['amount_spent'] \
+                                  .sum() \
+                                  .reset_index() \
+                                  .sort_values(by='amount_spent', ascending=False)
+                    if not sorted_subscriptions.empty:
+                        st.dataframe(sorted_subscriptions[['activity_description', 'amount_spent']])
                     else:
                         st.info("No subscription costs for the selected filters.")
-                else:
-                    st.info("No data available for the selected filters.")
 
-            # ------------------ MERCHANT INSIGHTS SECTION ------------------
-            st.header("🏪 Frequent Merchants")
-            st.markdown("These are the merchants you transacted with the most.")
 
-            if not filtered_expenses.empty:
-                top_merchants = filtered_expenses['activity_description'].value_counts().head(10).reset_index()
-                top_merchants.columns = ['Merchant', 'Transaction Count']
-                st.dataframe(top_merchants)
+
+                st.header("🤖 AI Recommendations")
+                if st.button("Generate Spending Analysis"):
+                    with st.spinner("Analyzing your spending habits..."):
+                        recs = get_gemini_recommendations_based_on_transactions(filtered_df.to_json(orient='records', date_format='iso'))
+                        st.markdown(recs)
             else:
-                st.info("No data available for the selected filters.")
-
-            # ------------------ AI RECOMMENDATIONS SECTION ------------------
-            st.header("🤖 AI Recommendations")
-            if st.button("Predict"):
-                st.write(get_gemini_recommendations_based_on_transactions(df.to_json(orient='records', date_format='iso')))
-
+                st.warning("No data available for the selected filters. Please adjust your selection or upload a statement.")
 
         else:
-            st.info("Please upload a bank statement PDF to populate the dashboard. Once uploaded, the extracted data and analysis will appear here.")
+            st.info("👋 Welcome! No transaction data found. Please upload a PDF statement using the sidebar to get started.")
 
-        if st.button("Logout", use_container_width=True):
-            st.logout()
+    # --- Login Screen ---
+    elif user:
+        _, col, _ = st.columns([1, 2, 1])
+        # Make sure you have a logo file at this path in your project directory
+        # col.image("./media/logo3.png", width=500) 
+        col.title("Financial Insights Dashboard")
+        st.subheader("What are you wasting money on? Unsure? Let's find out!")
+        if st.button("Login with Google", use_container_width=True):
+            st.login("google")
+    else:
+        st.info("Authentication is not available. This can happen if the app is not running on a supported platform like Streamlit Community Cloud.")
 
 if __name__ == "__main__":
     main()
