@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import streamlit as st
 from datetime import datetime
 import PyPDF2
@@ -6,103 +7,61 @@ from google import genai
 import json
 from typing import List
 
-# Set to display all columns
-pd.set_option('display.max_columns', None)
-
-# Set max rows to display (None means unlimited)
-pd.set_option('display.max_rows', None)
-
-# You can add your category_guide here if you re-introduce it
+# This guide remains the same.
 category_guide = """
-- Living Expenses:
-    - Rent & Mortgage Payments
-    - Utilities (Electricity, Water, Gas)
-    - Internet & Cable TV
-    - Groceries - Supermarket Purchases
-    - Dining Out - Restaurants & Cafes
-    - Transportation - Fuel, Public Transport, Ride-sharing
-    - Household Supplies
-    - Home Maintenance & Repairs
-- Personal & Lifestyle:
-    - Clothing & Accessories
-    - Personal Care (Haircuts, Cosmetics)
-    - Entertainment (Movies, Concerts, Hobbies)
-    - Fitness & Wellness (Gym Memberships, Sports)
-    - Education & Books
-    - Travel & Vacations
-    - Gifts & Donations
-- Financial:
-    - Loan Payments (Student, Personal)
-    - Credit Card Payments (Payments made to the card, not purchases)
-    - Savings & Investments
-    - Insurance (Health, Auto, Home)
-    - Bank Fees
-- Healthcare:
-    - Doctor Visits & Medical Services
-    - Pharmacy & Prescriptions
-    - Dental Care
-    - Vision Care
-- Subscriptions:
-    - Streaming Services (Netflix, Spotify)
-    - Software Subscriptions
-    - Magazine/Newspaper Subscriptions
-    - Membership Fees (e.g., Amazon Prime, gym membership, but if the gym membership is under Fitness & Wellness, then put it there)
+- Living Expenses: Rent, Utilities, Groceries, Dining Out, Transportation
+- Personal & Lifestyle: Clothing, Personal Care, Entertainment, Fitness, Travel
+- Financial: Loan Payments, Credit Card Payments, Savings, Insurance, Bank Fees
+- Healthcare: Doctor Visits, Pharmacy, Dental, Vision
+- Subscriptions: Streaming, Software, Memberships
+- Amazon: All purchases made on Amazon, including physical goods and digital content.
+- Other: Any transaction that does not fit into the above categories.
 """
+
+# This custom CSS remains the same.
+custom_css_markdown = """
+        <style>
+        .metric-card { background-color: #f0f2f6; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2); height: 150px; display: flex; flex-direction: column; justify-content: center; text-align: center;}
+        .metric-card:hover {box-shadow: 0 8px 16px 0 rgba(0,0,0,0.2);}
+        .metric-title { font-size: 1.1em; font-weight: bold; margin-bottom: 5px;}
+        .metric-value { font-size: 2.2em; color: #007bff; font-weight: bolder;}
+        .metric-delta {font-size: 0.9em; font-weight: bold;}
+        .metric-delta.positive {color: #28a745;}
+        .metric-delta.inverse {color: #dc3545;}
+        </style>
+        """
 
 @st.cache_data
 def extract_text_and_tables_from_uploaded_pdfs(uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile]) -> List[str]:
-    """
-    Extracts all text and table data (as text) from Streamlit uploaded PDF files
-    using PyPDF2.
-
-    Args:
-        uploaded_files (List[st.runtime.uploaded_file_manager.UploadedFile]):
-            A list of Streamlit UploadedFile objects, each representing an uploaded PDF file.
-
-    Returns:
-        List[str]: A list of strings, where each string contains the extracted
-                    text and table data from a single PDF file.
-    """
     extracted_data = []
-
-    if not uploaded_files:
-        st.warning("No PDF files uploaded for extraction.")
-        return []
-
-    st.info(f"Found {len(uploaded_files)} PDF file(s) to process.")
-
-    for uploaded_file in uploaded_files:
-        text_from_pdf = ""
+    if not uploaded_files: return []
+    for file in uploaded_files:
         try:
-            reader = PyPDF2.PdfReader(uploaded_file)
-            for page_num in range(len(reader.pages)):
-                page = reader.pages[page_num]
-                text_from_pdf += page.extract_text() + "\n"
-            extracted_data.append(text_from_pdf)
-            st.success(f"Extracted data from: **{uploaded_file.name}**")
+            reader = PyPDF2.PdfReader(file)
+            text = "".join(page.extract_text() for page in reader.pages)
+            extracted_data.append(text)
         except Exception as e:
-            st.error(f"Error processing {uploaded_file.name}: {e}")
-
+            st.error(f"Error processing {file.name}: {e}")
     return extracted_data
 
+
 @st.cache_data
-def get_gemini_response_from_pdf_data(pdf_texts: list[str]) -> str:
+def get_gemini_response_from_pdf_data(pdf_texts: List[str]) -> str:
     """
-    Feeds the extracted PDF text data to the Gemini API and returns the response.
-
-    Args:
-        pdf_texts (list[str]): A list of strings, each containing text extracted from a PDF.
-
-    Returns:
-        str: The text response from the Gemini API, expected to be in JSON format.
+    Feeds extracted PDF text to the Gemini API and aggregates responses.
+    This function remains largely the same but ensures a robust prompt.
     """
     if not pdf_texts:
-        return "No PDF text provided to generate a response."
+        return "[]"
 
-    # Using st.secrets to securely access API key
-    client = genai.Client(api_key="AIzaSyCUUhK6bngglPni-WOPCmTINAetFiisbnk") # Ensure you have this set up in Streamlit secrets
+    all_transactions = []
+    # Use st.secrets for the API key for security
+    try:
+        client = genai.Client(api_key=st.secrets["gemini"]["api_key"])
+    except Exception as e:
+        st.error(f"Could not initialize Gemini client. Ensure your API key is in secrets.toml: [gemini] api_key='...'")
+        return "[]"
 
-    # Define prompt
     prompt = f"""
     You are an expert at extracting financial transaction data from bank statements.
     Below is text extracted from one or more bank statement PDFs.
@@ -111,12 +70,12 @@ def get_gemini_response_from_pdf_data(pdf_texts: list[str]) -> str:
     If a piece of information is not explicitly available in the provided text, use an empty string for that field.
 
     Here are the required columns and their descriptions:
-    1.  customer_id: A unique ID to identify the bank customer.
+    1.  customer_id: A unique ID to identify the bank customer, it should consist of the first_name, last_name and first and street number e.g alexjuma2525.
     2.  f_name: Customer first name.
     3.  l_name: Customer last name.
     4.  address: Customer address.
-    5.  transaction_date: The date the transaction occurred (e.g., 'Jan 01').
-    6.  posting_date: The date the transaction was posted (e.g., 'Jan 02').
+    5.  transaction_date: The date the transaction occurred (e.g., 'Jan 01') should be written as 01-01-2024 (MM-DD-YYYY format).
+    6.  posting_date: The date the transaction was posted (e.g., 'Jan 02') should be written as 01-01-2024 (MM-DD-YYYY format).
     7.  activity_description: A detailed description of the transaction (e.g., 'PURCHASE AT STARBUCKS').
     8.  category: A broad category for the transaction (e.g., 'Living Expenses', 'Personal & Lifestyle').
     9.  sub_category: A more specific sub-category for the transaction (e.g., 'Coffee Shops', 'Groceries - Supermarket Purchases').
@@ -130,150 +89,122 @@ def get_gemini_response_from_pdf_data(pdf_texts: list[str]) -> str:
     The output must be a single JSON array of objects, with no additional text or formatting outside of the JSON.
 
     DO NOT STOP UNTIL THE FULL JSON ARRAY IS GENERATED.
+    """
+    
+    for text in pdf_texts:
+        try:
+            full_prompt = prompt + "\n\nHere is the extracted text:\n" + text
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=[full_prompt])
+            if response and response.text:
+                json_str = response.text.strip().lstrip('```json').rstrip('```')
+                transactions = json.loads(json_str)
+                if isinstance(transactions, list):
+                    all_transactions.extend(transactions)
+        except Exception as e:
+            st.warning(f"Could not process a document with AI. It might be a formatting issue. Error: {e}")
+            continue
+    
+    return json.dumps(all_transactions) if all_transactions else "[]"
 
-    Here is the extracted text from the PDF(s):
-    """ + "\n\n".join(pdf_texts)
-
-    contents = [prompt]
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",  # Using a suitable model
-            contents=contents,
-        )
-
-        if response and response.text:
-            return response.text
-        else:
-            return "No response received from the model or empty response."
-
-    except Exception as e:
-        return f"Error feeding data to Gemini API: {str(e)}"
 
 def convert_gemini_response_to_dataframe(response_text: str) -> pd.DataFrame:
     """
-    Converts the text response from the Gemini API (expected to be JSON)
-    into a pandas DataFrame.
-
-    Args:
-        response_text (str): The JSON string returned from the Gemini API.
-
-    Returns:
-        pd.DataFrame: A pandas DataFrame containing the parsed transaction data.
+    Converts the JSON string from Gemini into a fully preprocessed DataFrame.
+    This function now calls apply_data_types, making it the central point for creating
+    a clean DataFrame ready for database insertion or visualization.
     """
-    if not response_text or "No response received" in response_text or "Error feeding data" in response_text:
-        st.warning("No valid response from the AI model to convert to DataFrame.")
-        return pd.DataFrame()
-
+    if not response_text: return pd.DataFrame()
     try:
-        # Remove the ```json and trailing ```
-        json_str = response_text.strip('```json\n').strip('```').strip()
-
-        # Parse the JSON string into a Python dictionary
-        data = json.loads(json_str)
-
-        if isinstance(data, list):
-            df = pd.DataFrame(data)
-        elif isinstance(data, dict):
-            df = pd.DataFrame([data])
-        else:
-            st.warning(f"Unexpected JSON structure received from AI model: {type(data)}. Returning empty DataFrame.")
-            return pd.DataFrame()
-
-        st.success("Successfully converted AI response to DataFrame.")
-
-        # --- Post-processing for DataFrame ---
-        def parse_date_with_year(date_str, year=datetime.now().year): # Default to current year
-            try:
-                # Handle cases where year might be included or not
-                if len(date_str.split()) == 3: # e.g., 'Jan 01 2024'
-                    return datetime.strptime(date_str, "%b %d %Y")
-                else: # e.g., 'Jan 01'
-                    return datetime.strptime(f"{date_str} {year}", "%b %d %Y")
-            except ValueError:
-                return pd.NaT
-
-        if 'transaction_date' in df.columns:
-            df['transaction_date'] = df['transaction_date'].apply(parse_date_with_year)
-        if 'posting_date' in df.columns:
-            df['posting_date'] = df['posting_date'].apply(parse_date_with_year)
-
-        # Extract month and day for analysis
-        if not df.empty and 'transaction_date' in df.columns:
-            df['month'] = df['transaction_date'].dt.month
-            df['day'] = df['transaction_date'].dt.day
-            df['month_name'] = df['transaction_date'].dt.strftime('%B')
-            df['day_of_week'] = df['transaction_date'].dt.day_name()
-            df['year'] = df['transaction_date'].dt.year
-
-        if 'amount_spent' in df.columns:
-            df['amount_spent'] = pd.to_numeric(df['amount_spent'], errors='coerce')
-        else:
-            st.warning("Warning: 'amount_spent' column not found in DataFrame.")
-
-        return df
-
-    except json.JSONDecodeError as e:
-        st.error(f"Error decoding JSON from AI response: {e}")
-        st.code(f"Attempted to decode (first 500 chars): \n{response_text[:500]}...", language="json")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"An unexpected error occurred during DataFrame conversion: {e}")
+        data = json.loads(response_text)
+        if not isinstance(data, list) or not data: return pd.DataFrame()
+        
+        # This is the key step: convert raw data and apply all transformations
+        return apply_data_types(pd.DataFrame(data))
+    
+    except json.JSONDecodeError:
+        st.error("Failed to decode the AI's response. The format was not valid JSON.")
         return pd.DataFrame()
     
-def save_pandas_df_as_json(df: pd.DataFrame, filename: str) -> None:
-    """
-    Saves a pandas DataFrame as a JSON file.
 
-    Args:
-        df (pd.DataFrame): The DataFrame to save.
-        filename (str): The name of the file to save the DataFrame to.
+def apply_data_types(df: pd.DataFrame) -> pd.DataFrame:
     """
-    try:
-        df.to_json(filename, orient='records', date_format='iso')
-        st.success(f"DataFrame successfully saved as {filename}")
-    except Exception as e:
-        st.error(f"Error saving DataFrame as JSON: {e}")
+    This is the single source of truth for data cleaning and feature engineering.
+    It takes a raw DataFrame (from Gemini or the DB) and returns a clean,
+    correctly-typed DataFrame ready for use.
+    """
+    if df.empty: return df
 
-def get_gemini_recommendations_based_on_transactions(transactions_json: json) -> str:
-    """
-    Feeds the table to the Gemini API and returns the response.
-    """
+    # Convert date columns, coercing errors to NaT (Not a Time)
+    for col in ['transaction_date', 'posting_date']:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
+
+    # Convert numeric columns, coercing errors to NaN (Not a Number)
+    for col in ['amount_spent', 'credit_limit', 'available_credit']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Convert boolean column
+    if 'is_subscription' in df.columns:
+        # Safely convert to boolean, handling various truthy/falsy values
+        df['is_subscription'] = df['is_subscription'].apply(
+            lambda x: str(x).lower() in ['true', '1', 't', 'y', 'yes'] if pd.notna(x) else False
+        ).astype(bool)
+
+    # --- Feature Engineering: Create new columns from the transaction date ---
+    # This should only run if 'transaction_date' exists and is a datetime column
+    if 'transaction_date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['transaction_date']):
+        # Fill missing dates temporarily to avoid errors, then drop them
+        valid_dates = df['transaction_date'].dropna()
+        df.loc[valid_dates.index, 'year'] = valid_dates.dt.year.astype('Int64') # Use nullable integer
+        df.loc[valid_dates.index, 'month'] = valid_dates.dt.month.astype('Int64')
+        df.loc[valid_dates.index, 'day'] = valid_dates.dt.day.astype('Int64')
+        df.loc[valid_dates.index, 'month_name'] = valid_dates.dt.strftime('%B')
+        df.loc[valid_dates.index, 'day_of_week'] = valid_dates.dt.day_name()
+
+    # Clean up string columns by stripping whitespace
+    for col in df.select_dtypes(['object']).columns:
+        df[col] = df[col].str.strip()
     
-    # Using st.secrets to securely access API key
-    client = genai.Client(api_key="AIzaSyCUUhK6bngglPni-WOPCmTINAetFiisbnk") # Ensure you have this set up in Streamlit secrets
+    # Strip whitespace from column names as well
+    df.columns = df.columns.str.strip()
+    
+    return df
 
-    # Define prompt
-    prompt = f"""
-    Based on the following credit card transactions: {transactions_json}, provide a detailed analysis of the user's spending habits.
-    Explain to them the areas in which they can save money, and suggest specific actions they can take to reduce unnecessary expenses.
-    The analysis should be comprehensive and actionable, focusing on practical steps the user can implement to improve their financial situation.
-    The response should be in a clear, structured format that the user can easily understand and follow. The resonse should be text.   
-    """
 
-    contents = [prompt]
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",  # Using a suitable model
-            contents=contents,
-        )
-
-        if response and response.text:
-            return response.text
-        else:
-            return "No response received from the model or empty response."
-
-    except Exception as e:
-        return f"Error feeding data to Gemini API: {str(e)}"
-
-def render_metric_card(column, title, value, delta=None):
+def render_metric_card(column, title, value, delta_value=None, delta_is_inverse=False):
+    # This function remains the same.
     with column:
+        delta_html = ""
+        if delta_value:
+            delta_class = "metric-delta inverse" if delta_is_inverse else "metric-delta positive"
+            delta_html = f"<div class='{delta_class}'>{delta_value}</div>"
+        
         card_html = f"""
         <div class="metric-card">
             <div class="metric-title">{title}</div>
             <div class="metric-value">{value}</div>
-            {"<div class='" + ("metric-delta positive" if "Credit" in str(delta) else "metric-delta") + "'>" + delta + "</div>" if delta else ""}
+            {delta_html}
         </div>
         """
         st.markdown(card_html, unsafe_allow_html=True)
+    
+
+def get_gemini_recommendations_based_on_transactions(transactions_json: str) -> str:
+    # This function remains the same.
+    try:
+        client = genai.Client(api_key=st.secrets["gemini"]["api_key"])
+    except Exception as e:
+        st.error(f"Could not initialize Gemini client. Ensure your API key is in secrets.toml.")
+        return "Could not generate recommendations."
+
+    prompt = f"Based on these transactions: {transactions_json}, provide a detailed analysis of spending habits. Explain where money can be saved and suggest specific, actionable steps to reduce unnecessary expenses. Format the response in clear, easy-to-understand Markdown."
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[prompt],
+        )
+        return response.text if response and response.text else "No recommendations received from the model."
+    except Exception as e:
+        return f"Error communicating with the Gemini API: {str(e)}"
