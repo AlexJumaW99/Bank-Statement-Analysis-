@@ -14,8 +14,8 @@ category_guide = """
 - Financial: Loan Payments, Credit Card Payments, Savings, Insurance, Bank Fees
 - Healthcare: Doctor Visits, Pharmacy, Dental, Vision
 - Subscriptions: Streaming, Software, Memberships
-- Amazon: All purchases made on Amazon, including physical goods and digital content.
-- Other: Any transaction that does not fit into the above categories.
+- Amazon: All purchases made on Amazon, including physical goods and digital content, sub-category should also be Amazon.
+- Other: Any transaction that does not fit into the above categories, sub-category should also be Other.
 """
 
 # This custom CSS remains the same.
@@ -68,15 +68,17 @@ def get_gemini_response_from_pdf_data(pdf_texts: List[str]) -> str:
     Your task is to extract all transaction details and present them in a structured JSON array.
     Each element in the array should represent a single transaction and contain the following fields.
     If a piece of information is not explicitly available in the provided text, use an empty string for that field.
+    Please skip over any rows with liquor and cannabis purchases, as these are not relevant to the analysis. The merchants Wowkpow, Toad In The Hole, Kings Head Pub and Canna Cabana for example are cannabis stores and should be skipped. 
+    Also skip rows with cash advances, as these are not relevant to the analysis. 
 
     Here are the required columns and their descriptions:
-    1.  customer_id: A unique ID to identify the bank customer, it should consist of the first_name, last_name and first and street number e.g alexjuma2525.
+    1.  customer_id: A unique ID to identify the bank customer, it should consist of the first_name, followed by an underscore, then the last_name e.g alex_juma
     2.  f_name: Customer first name.
     3.  l_name: Customer last name.
     4.  address: Customer address.
     5.  transaction_date: The date the transaction occurred (e.g., 'Jan 01') should be written as 01-01-2024 (MM-DD-YYYY format).
     6.  posting_date: The date the transaction was posted (e.g., 'Jan 02') should be written as 01-01-2024 (MM-DD-YYYY format).
-    7.  activity_description: A detailed description of the transaction (e.g., 'PURCHASE AT STARBUCKS').
+    7.  activity_description: Refers to the merchant that the user bought the good or service from (e.g., 'UBER* TRIP TORONTO ON'). Please simplify this merchant name to a simpler name if possible (e.g., 'UBER'). Merchant name should be in all caps always. 
     8.  category: A broad category for the transaction (e.g., 'Living Expenses', 'Personal & Lifestyle').
     9.  sub_category: A more specific sub-category for the transaction (e.g., 'Coffee Shops', 'Groceries - Supermarket Purchases').
     Please use the following as reference to come up with the categories and sub-categories: {category_guide}.
@@ -198,11 +200,11 @@ def get_gemini_recommendations_based_on_transactions(transactions_json: str) -> 
         st.error(f"Could not initialize Gemini client. Ensure your API key is in secrets.toml.")
         return "Could not generate recommendations."
 
-    prompt = f"Based on these transactions: {transactions_json}, provide a detailed analysis of spending habits. Explain where money can be saved and suggest specific, actionable steps to reduce unnecessary expenses. Format the response in clear, easy-to-understand Markdown."
+    prompt = f"Based on these transactions: {transactions_json}, provide a detailed tabular analysis of spending habits. Explain where money can be saved and suggest specific, actionable steps to reduce unnecessary expenses. Format the response in clear, easy-to-understand Markdown."
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[prompt],
         )
         return response.text if response and response.text else "No recommendations received from the model."
