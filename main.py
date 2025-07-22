@@ -27,6 +27,7 @@ def main():
             st.stop()
 
     user = st.user
+    # st.json(user)
 
     if user and user.is_logged_in:
         # --- Logged-In User Experience ---
@@ -70,8 +71,8 @@ def main():
                     texts = extract_text_and_tables_from_uploaded_pdfs(uploaded_files)
                     if texts:
                         response = get_gemini_response_from_pdf_data(texts)
-                        st.info("Gemini JSON Response:")
-                        st.markdown(response)
+                        # st.info("Gemini JSON Response:")
+                        # st.markdown(response)
                         # This function now returns a fully preprocessed DataFrame
                         new_df = convert_gemini_response_to_dataframe(response)
                         
@@ -139,26 +140,48 @@ def main():
             filtered_df = df[df['year'].isin(selected_years) & df['month_name'].isin(selected_months)].copy() if selected_years and selected_months else pd.DataFrame()
 
             if not filtered_df.empty:
+                total_number_of_days = len(filtered_df['transaction_date'].dt.date.unique())
+
                 st.header("💾 Transaction Details")
+                st.markdown(f"Total number of days: {total_number_of_days} days")
                 st.dataframe(filtered_df.drop(columns=['unique_id'], errors='ignore'))
                 
                 # --- The rest of your visualization code remains the same ---
                 # It will now work reliably with the clean `filtered_df`
+                total_number_of_days = len(filtered_df['transaction_date'].dt.date.unique())
                 expenses = filtered_df[filtered_df['amount_spent'] > 0]
                 payments = filtered_df[filtered_df['amount_spent'] < 0].copy()
                 payments['amount_spent'] = payments['amount_spent'].abs()
 
                 st.header("📊 Overview")
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 total_expenses = expenses['amount_spent'].sum()
                 total_payments = payments['amount_spent'].sum()
                 balance = total_expenses - total_payments
-                avg_daily_spend = filtered_df.groupby('transaction_date')['amount_spent'].mean().mean()
+                # avg_daily_spend = expenses.groupby('transaction_date')['amount_spent'].mean().sum()
                 # st.write(avg_daily_spend)
+
+                # # Group by day and sum the amounts for each day
+                # daily_spending = expenses.groupby(expenses['transaction_date'])['amount_spent'].sum()
+                # daily_payments = payments.groupby(payments['transaction_date'])['amount_spent'].sum()
+                # # Calculate the mean of the daily spending
+                # mean_daily_spending = daily_spending.mean()
+                # mean_daily_payments = daily_payments.mean()
+                mean_daily_spending = total_expenses / total_number_of_days if total_number_of_days > 0 else 0
+                mean_daily_payments = total_payments / total_number_of_days if total_number_of_days > 0 else 0
+
+                # st.dataframe(filtered_df['transaction_date'].dt.date.unique())
+                # st.write(mean_daily_payments)
+                # st.write(total_payments)
+                # st.write(total_number_of_days)
+
+                
+
                 render_metric_card(col1, "Total Spending", f"${total_expenses:,.2f}")
                 render_metric_card(col2, "Total Payments", f"${total_payments:,.2f}")
                 render_metric_card(col3, "Current Balance", f"${balance:,.2f}", f"{'+' if balance >= 0 else ''}${balance:,.2f} {'(Owing)' if balance > 0 else '(Credit)'}", balance > 0)
-                render_metric_card(col4, "Average Daily Spend", f"${avg_daily_spend:,.2f}", f"{'Net Debt Payer' if avg_daily_spend < 0 else 'Net Debt Borrower'}")
+                render_metric_card(col4, "Average Daily Spend", f"${mean_daily_spending:,.2f}")
+                render_metric_card(col5, "Average Daily Payments", f"${mean_daily_payments:,.2f}")
 
 
                 st.header("💸 Spending Patterns")
@@ -254,12 +277,12 @@ def main():
 
     # --- Login Screen ---
     elif user:
-        _, col, _ = st.columns([1, 2, 1])
+        _, col, _ = st.columns([1, 1, 1])
         # Make sure you have a logo file at this path in your project directory
-        # col.image("./media/logo3.png", width=500) 
-        col.title("Financial Insights Dashboard")
-        st.subheader("What are you wasting money on? Unsure? Let's find out!")
-        if st.button("Login with Google", use_container_width=True):
+        col.image("./media/logo3.png", use_container_width=True) 
+        col.subheader("Financial Insights Dashboard")
+        col.markdown("What are you wasting money on? Unsure? Let's find out!")
+        if col.button("Login with Google", use_container_width=False):
             st.login("google")
     else:
         st.info("Authentication is not available. This can happen if the app is not running on a supported platform like Streamlit Community Cloud.")
