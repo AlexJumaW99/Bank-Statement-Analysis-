@@ -6,7 +6,6 @@ import PyPDF2
 from google import genai
 import json
 from typing import List
-import hashlib
 
 # This guide remains the same.
 category_guide = """
@@ -49,50 +48,57 @@ def extract_text_and_tables_from_uploaded_pdfs(uploaded_files: List[st.runtime.u
 @st.cache_data
 def get_gemini_response_from_pdf_data(pdf_texts: List[str]) -> str:
     """
-    Feeds extracted PDF text to the Gemini API.
-    The prompt is now simplified to only extract raw data, not perform calculations.
+    Feeds extracted PDF text to the Gemini API and aggregates responses.
+    This function remains largely the same but ensures a robust prompt.
     """
     if not pdf_texts:
         return "[]"
 
     all_transactions = []
+    # Use st.secrets for the API key for security
     try:
         client = genai.Client(api_key=st.secrets["gemini"]["api_key"])
     except Exception as e:
         st.error(f"Could not initialize Gemini client. Ensure your API key is in secrets.toml: [gemini] api_key='...'")
         return "[]"
-    
-    # caveat = "Skip rows for liquor, cannabis (e.g., Wowkpow, Toad In The Hole, Kings Head Pub, Canna Cabana), or cash advances. These should not be included in the final output."
+
+    # caveat = "Skip rows for liquor, cannabis (e.g., Wowkpow, Toad In The Hole, Kings Head Pub, Canna Cabana, Bar Red Sea), or cash advances. These should not be included in the final output."
     caveat = " "
+
     prompt = f"""
     You are an expert at extracting financial transaction data from bank statements.
-    From the text below, extract all transaction details into a structured JSON array.
-    Each object should represent one transaction.
-    If information is not available, use an empty string or null.
+    Below is text extracted from one or more bank statement PDFs.
+    Your task is to extract all transaction details and present them in a structured JSON array.
+    Each element in the array should represent a single transaction and contain the following fields.
+    If a piece of information is not explicitly available in the provided text, use an empty string for that field.
     {caveat}
 
-    Required columns:
-    1.  customer_id: Unique customer ID (e.g., 'alex_juma').
+    Here are the required columns and their descriptions:
+    1.  customer_id: A unique ID to identify the bank customer, it should consist of the first_name, followed by an underscore, then the last_name e.g alex_juma
     2.  f_name: Customer first name.
     3.  l_name: Customer last name.
-    4.  address: Customer address (e.g 2525 PEMBINA HWY 603 WINNIPEG MB R3T 6H3).
-    5.  transaction_date: Date of the transaction (MM-DD-YYYY format).
-    6.  posting_date: Date the transaction was posted (MM-DD-YYYY format).
-    7.  activity_description: Merchant name, simplified and in ALL CAPS (e.g., 'UBER').
-    8.  category: Broad category for the transaction.
-    9.  sub_category: Specific sub-category. Use this guide for categories: {category_guide}.
-    10. amount_spent: Transaction amount. Positive for expenses, negative for payments/credits.
-    11. credit_limit: The total credit limit on the statement.
-    12. available_credit: The available credit listed at the START of the statement (extract only once).
-    13. is_subscription: Boolean (true/false) for recurring subscriptions.
+    4.  address: Customer address.
+    5.  transaction_date: The date the transaction occurred (e.g., 'Jan 01') should be written as 01-01-2024 (MM-DD-YYYY format).
+    6.  posting_date: The date the transaction was posted (e.g., 'Jan 02') should be written as 01-01-2024 (MM-DD-YYYY format).
+    7.  activity_description: Refers to the merchant that the user bought the good or service from (e.g., 'UBER* TRIP TORONTO ON'). Please simplify this merchant name to a simpler name if possible (e.g., 'UBER'). Merchant name should be in all caps always. 
+    8.  category: A broad category for the transaction (e.g., 'Living Expenses', 'Personal & Lifestyle').
+    9.  sub_category: A more specific sub-category for the transaction (e.g., 'Coffee Shops', 'Groceries - Supermarket Purchases').
+    Please use the following as reference to come up with the categories and sub-categories: {category_guide}.
+    10. amount_spent: The amount of money spent in the transaction. This should be a positive number for debits/expenses and a negative number for credits/returns.
+    11. credit_limit: The total credit limit given by the bank, found on the statement.
+    12. available_credit: The available credit after each transaction. The first row should have the initial value on the statement. For subsequent rows, update this value by adding the 'amount_spent' of the *current* transaction to the 'available_credit' of the *previous* row.
+    13. is_subscription: A boolean (true/false) indicating if the transaction is for a recurring subscription service.
 
-    Output must be a single, valid JSON array of objects.
+    Please ensure that 'amount_spent' is a numeric type (float or int) and 'is_subscription' is a boolean.
+    The output must be a single JSON array of objects, with no additional text or formatting outside of the JSON.
+
+    DO NOT STOP UNTIL THE FULL JSON ARRAY IS GENERATED.
     """
     
     for text in pdf_texts:
         try:
             full_prompt = prompt + "\n\nHere is the extracted text:\n" + text
-            response = client.models.generate_content(model="models/gemini-1.5-flash", contents=[full_prompt])
+            response = client.models.generate_content(model="gemini-2.5-flash", contents=[full_prompt])
             if response and response.text:
                 json_str = response.text.strip().lstrip('```json').rstrip('```')
                 transactions = json.loads(json_str)
@@ -102,113 +108,73 @@ def get_gemini_response_from_pdf_data(pdf_texts: List[str]) -> str:
             st.warning(f"Could not process a document with AI. It might be a formatting issue. Error: {e}")
             continue
     
-    st.json(all_transactions, expanded=True)
     return json.dumps(all_transactions) if all_transactions else "[]"
 
 
 def convert_gemini_response_to_dataframe(response_text: str) -> pd.DataFrame:
     """
     Converts the JSON string from Gemini into a fully preprocessed DataFrame.
-    This now includes hashing, cleaning, and calculating the running credit balance.
+    This function now calls apply_data_types, making it the central point for creating
+    a clean DataFrame ready for database insertion or visualization.
     """
     if not response_text: return pd.DataFrame()
     try:
         data = json.loads(response_text)
         if not isinstance(data, list) or not data: return pd.DataFrame()
         
-        df = pd.DataFrame(data)
-        df = apply_data_types(df)
-        df = create_transaction_hash(df)
-        df = calculate_running_credit(df) # Calculate credit after cleaning and sorting
-        return df
+        # This is the key step: convert raw data and apply all transformations
+        return apply_data_types(pd.DataFrame(data))
     
     except json.JSONDecodeError:
         st.error("Failed to decode the AI's response. The format was not valid JSON.")
         return pd.DataFrame()
+    
 
 def apply_data_types(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Single source of truth for data cleaning and type conversion.
+    This is the single source of truth for data cleaning and feature engineering.
+    It takes a raw DataFrame (from Gemini or the DB) and returns a clean,
+    correctly-typed DataFrame ready for use.
     """
     if df.empty: return df
 
-    df.columns = df.columns.str.strip()
-
+    # Convert date columns, coercing errors to NaT (Not a Time)
     for col in ['transaction_date', 'posting_date']:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors='coerce')
 
+    # Convert numeric columns, coercing errors to NaN (Not a Number)
     for col in ['amount_spent', 'credit_limit', 'available_credit']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
+    # Convert boolean column
     if 'is_subscription' in df.columns:
+        # Safely convert to boolean, handling various truthy/falsy values
         df['is_subscription'] = df['is_subscription'].apply(
             lambda x: str(x).lower() in ['true', '1', 't', 'y', 'yes'] if pd.notna(x) else False
         ).astype(bool)
 
+    # --- Feature Engineering: Create new columns from the transaction date ---
+    # This should only run if 'transaction_date' exists and is a datetime column
     if 'transaction_date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['transaction_date']):
+        # Fill missing dates temporarily to avoid errors, then drop them
         valid_dates = df['transaction_date'].dropna()
-        df.loc[valid_dates.index, 'year'] = valid_dates.dt.year.astype('Int64')
+        df.loc[valid_dates.index, 'year'] = valid_dates.dt.year.astype('Int64') # Use nullable integer
         df.loc[valid_dates.index, 'month'] = valid_dates.dt.month.astype('Int64')
         df.loc[valid_dates.index, 'day'] = valid_dates.dt.day.astype('Int64')
         df.loc[valid_dates.index, 'month_name'] = valid_dates.dt.strftime('%B')
         df.loc[valid_dates.index, 'day_of_week'] = valid_dates.dt.day_name()
 
+    # Clean up string columns by stripping whitespace
     for col in df.select_dtypes(['object']).columns:
         df[col] = df[col].str.strip()
     
-    return df
-
-def create_transaction_hash(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Creates a unique MD5 hash for each transaction row to prevent duplicates.
-    """
-    if df.empty:
-        df['TransactionHash'] = pd.Series(dtype='str')
-        return df
-
-    def generate_hash(row):
-        # Standardize data for consistent hashing
-        date_str = str(row['transaction_date'].date()) if pd.notna(row['transaction_date']) else ''
-        desc_str = str(row['activity_description']).lower().strip()
-        amount_str = f"{row['amount_spent']:.2f}" if pd.notna(row['amount_spent']) else ''
-        
-        # Combine into a single string
-        hash_string = f"{date_str}-{desc_str}-{amount_str}".encode('utf-8')
-        return hashlib.md5(hash_string).hexdigest()
-
-    df['TransactionHash'] = df.apply(generate_hash, axis=1)
-    return df
-
-def calculate_running_credit(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Accurately calculates the available_credit column after each transaction.
-    This function assumes the DataFrame is for a single statement period.
-    """
-    if df.empty or 'amount_spent' not in df.columns or 'available_credit' not in df.columns:
-        return df
-
-    # Sort by transaction date to ensure correct calculation order
-    df = df.sort_values(by='transaction_date', ascending=True).reset_index(drop=True)
-    
-    # Find the first valid 'available_credit' value, which should be the starting credit
-    first_valid_idx = df['available_credit'].first_valid_index()
-    
-    if first_valid_idx is None:
-        # If no starting credit is found, we cannot calculate the running balance.
-        return df
-        
-    start_credit = df.loc[first_valid_idx, 'available_credit']
-    
-    # Calculate the cumulative change in balance. A "spent" amount (positive) decreases credit.
-    # We use .iloc[first_valid_idx:] to start the calculation from the first transaction.
-    cumulative_spend = df.loc[first_valid_idx:, 'amount_spent'].cumsum()
-    
-    # The running balance is the starting credit minus the cumulative spend up to that point.
-    df.loc[first_valid_idx:, 'available_credit'] = start_credit - cumulative_spend
+    # Strip whitespace from column names as well
+    df.columns = df.columns.str.strip()
     
     return df
+
 
 def render_metric_card(column, title, value, delta_value=None, delta_is_inverse=False):
     # This function remains the same.
@@ -226,7 +192,8 @@ def render_metric_card(column, title, value, delta_value=None, delta_is_inverse=
         </div>
         """
         st.markdown(card_html, unsafe_allow_html=True)
-
+    
+@st.cache_data
 def get_gemini_recommendations_based_on_transactions(transactions_json: str) -> str:
     # This function remains the same.
     try:
@@ -235,16 +202,13 @@ def get_gemini_recommendations_based_on_transactions(transactions_json: str) -> 
         st.error(f"Could not initialize Gemini client. Ensure your API key is in secrets.toml.")
         return "Could not generate recommendations."
 
-    prompt = f"Based on these transactions: {transactions_json}, provide a detailed tabular analysis of spending habits. Explain where money can be saved and suggest specific, actionable steps to reduce unnecessary expenses. Format the response in clear, easy-to-understand Markdown."
+    prompt = f"Based on these transactions: {transactions_json}, provide a simple tabular analysis of spending habits. Explain where money can be saved and suggest specific, actionable steps to reduce unnecessary expenses. Format the response in clear, easy-to-understand Markdown, make sure the response is concise and actionable, focusing on practical savings tips. Avoid complex financial jargon or technical terms. The response should be suitable for a general audience without a financial background."
 
     try:
         response = client.models.generate_content(
-            model="models/gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[prompt],
         )
         return response.text if response and response.text else "No recommendations received from the model."
     except Exception as e:
         return f"Error communicating with the Gemini API: {str(e)}"
-
-
-
